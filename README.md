@@ -57,7 +57,9 @@ ENABLE_EXTRA_RELATIONS=true
 
 ## 接口概览
 - `POST /nlp/parse` 文本解析
-- `POST /tcm/syndrome/recommend` 证候推荐
+- `POST /tcm/syndrome/recommend`
+- `POST /tcm/symptom/recommend`
+ 证候推荐
 
 ## 接口示例
 `POST /nlp/parse`
@@ -72,5 +74,14 @@ ENABLE_EXTRA_RELATIONS=true
 ```json
 {
   "text": "头晕乏力，纳差，气短"
+}
+```
+
+`POST /tcm/symptom/recommend`
+```json
+{
+  "text": "ͷ�η������ɲ����",
+  "candidateLimit": 2000,
+  "maxReturn": 50
 }
 ```

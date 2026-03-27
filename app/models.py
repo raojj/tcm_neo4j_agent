@@ -37,3 +37,13 @@ class RecommendSyndromeReq(BaseModel):
 
 class RecommendSyndromeResp(BaseModel):
     syndromeNames: List[str] = Field(..., description="最相关的5个证型名称列表")
+
+
+class RecommendSymptomReq(BaseModel):
+    text: str = Field(..., description="User symptom description")
+    candidateLimit: Optional[int] = Field(None, description="Max symptom candidates fetched from Neo4j")
+    maxReturn: Optional[int] = Field(None, description="Max number of symptoms to return")
+
+
+class RecommendSymptomResp(BaseModel):
+    symptomNames: List[str] = Field(..., description="Matched symptom names")

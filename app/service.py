@@ -1,5 +1,6 @@
 import json
 import logging
+import re
 from typing import Any, Dict, List, Set, Tuple
 import time
 from threading import Lock
@@ -15,7 +16,7 @@ from app.database import (
     get_syndrome_name_candidates,
 )
 from app.models import ParseResp
-from app.tools import generate_dynamic_tools
+from app.tools import generate_dynamic_tools, get_nodes_by_label
 
 logger = logging.getLogger(__name__)
 
@@ -200,6 +201,108 @@ def _dedupe_dict_list(items: List[Dict[str, str]], key_fields: Tuple[str, ...]) 
 def _extract_json_top_keys(text: str, expected_top_keys: Set[str]) -> Dict[str, Any]:
     js = extract_json_object_with_top_keys(text, expected_top_keys)
     return json.loads(js)
+
+
+
+
+def recommend_symptoms_from_neo4j(
+    symptom_text: str,
+    candidate_limit: int | None = None,
+    max_return: int | None = None,
+) -> List[str]:
+    """
+    Match symptoms from Neo4j candidates using LLM.
+    Returns a de-duplicated list of matched symptom names.
+    """
+    text = (symptom_text or "").strip()
+    if not text:
+        return []
+
+    limit = candidate_limit if candidate_limit is not None else settings.SYMPTOM_CANDIDATE_LIMIT_DEFAULT
+    limit = max(1, min(int(limit), settings.SYMPTOM_CANDIDATE_LIMIT_MAX))
+
+    max_ret = max_return if max_return is not None else settings.SYMPTOM_MATCH_MAX_RETURN
+    max_ret = max(1, min(int(max_ret), settings.SYMPTOM_MATCH_MAX_RETURN))
+
+    nodes = get_nodes_by_label(settings.SYMPTOM_LABEL, limit=limit)
+    candidates: List[str] = []
+    seen = set()
+    for n in nodes or []:
+        name = (n.get("name") or "").strip()
+        if not name or name in seen:
+            continue
+        seen.add(name)
+        candidates.append(name)
+    if not candidates:
+        return []
+
+    llm = _get_llm()
+    sys = (
+        "你是中医症状抽取助手。\n"
+        "任务：从用户文本中抽取明确出现的症状/体征/脉象/舌象等，并进行最小拆分与归一化。\n"
+        "要求：只抽取文本明确表达或可直接规范化的症状，禁止推断与扩展；宁少勿多。\n"
+        "示例：\"头痛身疼\"->\"头痛\",\"身痛\"；\"喘咳胸满\"->\"喘\",\"咳嗽\",\"胸满\"；"
+        "\"痰白清稀\"->\"痰白\",\"痰清\",\"痰稀\"。\n"
+        f"输出严格 JSON 纯文本，顶层键只能是 symptoms，数组长度不超过 {max_ret}。\n"
+        "不要输出任何解释、markdown 或代码块。"
+    )
+    user = f"【用户文本】\n{text}\n\n请输出 JSON："
+    resp = llm.invoke([SystemMessage(content=sys), HumanMessage(content=user)])
+    data = _extract_json_top_keys(str(resp.content or ""), {"symptoms"})
+    items = data.get("symptoms") or []
+    if not isinstance(items, list):
+        items = []
+
+    cand_set = set(candidates)
+    out: List[str] = []
+    seen2 = set()
+    for x in items:
+        name = (str(x or "")).strip()
+        if not name or name in seen2:
+            continue
+        if name not in cand_set:
+            continue
+        seen2.add(name)
+        out.append(name)
+        if len(out) >= max_ret:
+            break
+
+    # Additional conservative matching from text (normalization + substring)
+    text_norm = re.sub(r"[\s,，;；。\.、:：/\\\\]", "", text)
+    text_norm = text_norm.replace("疼", "痛")
+
+    def _add_if_candidate(name: str):
+        if not name or name in seen2:
+            return
+        if name in cand_set:
+            out.append(name)
+            seen2.add(name)
+
+    # Direct substring matches (exact candidate appears in text)
+    for n in candidates:
+        if len(out) >= max_ret:
+            break
+        if n and n not in seen2 and n in text_norm:
+            _add_if_candidate(n)
+
+    # Compound handling: 痰白清稀 / 痰清稀
+    if len(out) < max_ret and ("痰白清稀" in text_norm or "痰清稀" in text_norm or ("痰" in text_norm and "清稀" in text_norm)):
+        _add_if_candidate("痰白")
+        _add_if_candidate("痰清")
+        _add_if_candidate("痰稀")
+
+    # Compound handling: 喘咳 / 咳喘
+    if len(out) < max_ret and ("喘咳" in text_norm or "咳喘" in text_norm):
+        _add_if_candidate("咳喘")
+        _add_if_candidate("喘咳")
+        _add_if_candidate("喘")
+        _add_if_candidate("咳嗽")
+        _add_if_candidate("咳")
+
+    if len(out) > max_ret:
+        out = out[:max_ret]
+
+    return out
 
 
 def recommend_syndromes_from_mysql(symptom_text: str, candidate_limit: int | None = None) -> List[str]:

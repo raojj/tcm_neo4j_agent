@@ -1,8 +1,15 @@
 from fastapi import FastAPI, HTTPException
 from contextlib import asynccontextmanager
 from app.database import neo4j_client
-from app.models import ParseReq, ParseResp, RecommendSyndromeReq, RecommendSyndromeResp
-from app.service import parse_text_with_langchain, recommend_syndromes_from_mysql
+from app.models import (
+    ParseReq,
+    ParseResp,
+    RecommendSyndromeReq,
+    RecommendSyndromeResp,
+    RecommendSymptomReq,
+    RecommendSymptomResp,
+)
+from app.service import parse_text_with_langchain, recommend_syndromes_from_mysql, recommend_symptoms_from_neo4j
 from app.config import settings
 import logging
 
@@ -67,6 +74,29 @@ def recommend_syndrome(req: RecommendSyndromeReq):
         names = recommend_syndromes_from_mysql(text, candidate_limit=req.candidateLimit)
         print(names)
         return RecommendSyndromeResp(syndromeNames=names)
+    except Exception as e:
+        import traceback
+        traceback.print_exc()
+        raise HTTPException(status_code=502, detail=f"recommend failed: {e}")
+
+
+@app.post("/tcm/symptom/recommend", response_model=RecommendSymptomResp)
+def recommend_symptom(req: RecommendSymptomReq):
+    logger.info(f"Received symptom recommend request: {req}")
+    text = (req.text or "").strip()
+    if not text:
+        raise HTTPException(status_code=400, detail="text cannot be empty")
+
+    candidate_limit = req.candidateLimit or settings.SYMPTOM_CANDIDATE_LIMIT_DEFAULT
+    candidate_limit = max(1, min(int(candidate_limit), settings.SYMPTOM_CANDIDATE_LIMIT_MAX))
+
+    max_return = req.maxReturn or settings.SYMPTOM_MATCH_MAX_RETURN
+    max_return = max(1, min(int(max_return), settings.SYMPTOM_MATCH_MAX_RETURN))
+
+    try:
+        names = recommend_symptoms_from_neo4j(text, candidate_limit=candidate_limit, max_return=max_return)
+        print(names)
+        return RecommendSymptomResp(symptomNames=names)
     except Exception as e:
         import traceback
         traceback.print_exc()
